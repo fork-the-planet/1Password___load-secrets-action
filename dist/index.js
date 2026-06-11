@@ -35488,7 +35488,7 @@ const installCliOnGithubActionRunner = async (version) => {
 
 
 ;// CONCATENATED MODULE: ./package.json
-const package_namespaceObject = {"rE":"4.0.0"};
+const package_namespaceObject = {"rE":"4.0.1"};
 ;// CONCATENATED MODULE: ./src/constants.ts
 const envConnectHost = "OP_CONNECT_HOST";
 const envConnectToken = "OP_CONNECT_TOKEN";
