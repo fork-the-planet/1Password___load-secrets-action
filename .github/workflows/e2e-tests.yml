@@ -27,6 +27,7 @@ on:
 jobs:
   test-service-account:
     name: Service Account (${{ matrix.os }}, ${{ matrix.version }}, export-env=${{ matrix.export-env }})
+    if: false # TEMP: disabled to run only test-docker-hub-fallback
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true
@@ -140,6 +141,7 @@ jobs:
 
   test-connect:
     name: Connect (ubuntu-latest, ${{ matrix.version }}, export-env=${{ matrix.export-env }})
+    if: false # TEMP: disabled to run only test-docker-hub-fallback
     runs-on: ubuntu-latest
     strategy:
       fail-fast: true
@@ -248,3 +250,69 @@ jobs:
       - name: Assert removed secrets [exported env]
         if: ${{ matrix.export-env }}
         run: ./tests/assert-env-unset.sh
+
+  test-docker-hub-fallback:
+    name: "Docker Hub fallback (${{ matrix.channel }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - channel: latest
+            versionPath: .CLI2.release.version
+          - channel: latest-beta
+            versionPath: .CLI2.beta.version
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build actions
+        run: npm run build:all
+
+      - name: Capture expected ${{ matrix.channel }} version from app-updates
+        id: expected
+        run: |
+          version=$(curl -s https://app-updates.agilebits.com/latest | jq -r '${{ matrix.versionPath }}')
+          echo "Expected ${{ matrix.channel }} version: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Service account
+        uses: ./configure
+        with:
+          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      # Blackhole only app-updates.agilebits.com. The download CDN (cache.agilebits.com)
+      # stays reachable, so version resolution fails over to Docker Hub.
+      - name: Simulate an app-updates.agilebits.com outage
+        run: echo "127.0.0.1 app-updates.agilebits.com" | sudo tee -a /etc/hosts
+
+      - name: Install 1Password CLI (must resolve via the Docker Hub fallback)
+        uses: ./
+        with:
+          version: ${{ matrix.channel }}
+
+      - name: Restore app-updates resolution
+        if: always()
+        run: sudo sed -i '/app-updates.agilebits.com/d' /etc/hosts
+
+      - name: Assert the fallback resolved the same version app-updates would have
+        run: |
+          expected="${{ steps.expected.outputs.version }}"
+          actual="$(op --version)"
+          if [ "$actual" != "$expected" ]; then
+            echo "Expected CLI version '$expected' but got '$actual'"
+            exit 1
+          fi
+          echo "Docker Hub fallback resolved $actual as expected"
