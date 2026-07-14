@@ -316,3 +316,77 @@ jobs:
             exit 1
           fi
           echo "Docker Hub fallback resolved $actual as expected"
+
+  test-baked-in-fallback:
+    name: "Baked-in fallback (${{ matrix.channel }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - channel: latest
+            fallbackKey: latest
+          - channel: latest-beta
+            fallbackKey: latestBeta
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build actions
+        run: npm run build:all
+
+      - name: Read expected baked-in ${{ matrix.channel }} version
+        id: expected
+        run: |
+          version=$(node -e "
+            const src = require('fs').readFileSync('src/op-cli-installer/version/fallback-versions.ts', 'utf8');
+            const m = src.match(/ReleaseChannel\.${{ matrix.fallbackKey }}\]:\s*\"([^\"]+)\"/);
+            if (!m) { console.error('Could not find baked-in version for ${{ matrix.fallbackKey }}'); process.exit(1); }
+            process.stdout.write(m[1]);
+          ")
+          echo "Expected baked-in ${{ matrix.channel }} version: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Service account
+        uses: ./configure
+        with:
+          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      # Blackhole both version sources. cache.agilebits.com (the binary CDN) stays
+      # reachable, so resolution falls all the way through to the baked-in version
+      # while the download still works.
+      - name: Simulate an app-updates and Docker Hub outage
+        run: |
+          echo "127.0.0.1 app-updates.agilebits.com" | sudo tee -a /etc/hosts
+          echo "127.0.0.1 hub.docker.com" | sudo tee -a /etc/hosts
+
+      - name: Install 1Password CLI (must resolve via the baked-in fallback)
+        uses: ./
+        with:
+          version: ${{ matrix.channel }}
+
+      - name: Restore version-source resolution
+        if: always()
+        run: sudo sed -i '/app-updates.agilebits.com/d;/hub.docker.com/d' /etc/hosts
+
+      - name: Assert the install used the baked-in version
+        run: |
+          expected="${{ steps.expected.outputs.version }}"
+          actual="$(op --version)"
+          if [ "$actual" != "$expected" ]; then
+            echo "Expected baked-in CLI version '$expected' but got '$actual'"
+            exit 1
+          fi
+          echo "Baked-in fallback resolved $actual as expected"
