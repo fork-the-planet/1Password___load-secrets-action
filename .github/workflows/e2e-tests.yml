@@ -27,15 +27,19 @@ on:
 jobs:
   test-service-account:
     name: Service Account (${{ matrix.os }}, ${{ matrix.version }}, export-env=${{ matrix.export-env }})
-    if: false # TEMP: disabled to run only test-docker-hub-fallback
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true
-      max-parallel: 4
+      max-parallel: 2
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        version: [latest, 2.30.0]
+        version: [latest]
         export-env: [true, false]
+        # The pinned version only proves an explicit version string is honored
+        include:
+          - os: ubuntu-latest
+            version: 2.30.0
+            export-env: false
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -141,13 +145,18 @@ jobs:
 
   test-connect:
     name: Connect (ubuntu-latest, ${{ matrix.version }}, export-env=${{ matrix.export-env }})
-    if: false # TEMP: disabled to run only test-docker-hub-fallback
+    needs: test-service-account
     runs-on: ubuntu-latest
     strategy:
       fail-fast: true
+      max-parallel: 2
       matrix:
-        version: [latest, 2.30.0]
+        version: [latest]
         export-env: [true, false]
+        # Run the pinned version once (see note in test-service-account).
+        include:
+          - version: 2.30.0
+            export-env: false
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -256,6 +265,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: true
+      max-parallel: 2
       matrix:
         include:
           - channel: latest
@@ -322,6 +332,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: true
+      max-parallel: 2
       matrix:
         include:
           - channel: latest
