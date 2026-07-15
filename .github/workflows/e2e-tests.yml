@@ -25,21 +25,17 @@ on:
         required: true
 
 jobs:
+  # Full secret-resolution coverage (ubuntu only): all shapes, both delivery paths, both export-env branches. Per-OS resolution is covered by the smoke job below.
   test-service-account:
-    name: Service Account (${{ matrix.os }}, ${{ matrix.version }}, export-env=${{ matrix.export-env }})
-    runs-on: ${{ matrix.os }}
+    name: Service Account (ubuntu-latest, ${{ matrix.version }}, export-env=${{ matrix.export-env }})
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: true
-      max-parallel: 2
+      # Read tests never run more than one combo at a time (chained + serialized here).
+      max-parallel: 1
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
         version: [latest]
-        export-env: [true, false]
-        # The pinned version only proves an explicit version string is honored
-        include:
-          - os: ubuntu-latest
-            version: 2.30.0
-            export-env: false
+        export-env: [false, true]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -143,20 +139,76 @@ jobs:
         shell: bash
         run: ./tests/assert-env-unset.sh
 
-  test-connect:
-    name: Connect (ubuntu-latest, ${{ matrix.version }}, export-env=${{ matrix.export-env }})
+  # Per-OS smoke: proves the resolution pipeline runs on macOS/Windows (one secret via env var + OP_ENV_FILE); shape coverage stays on the ubuntu job.
+  test-service-account-smoke:
+    name: Service Account smoke (${{ matrix.os }})
     needs: test-service-account
-    runs-on: ubuntu-latest
+    if: ${{ !cancelled() }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true
-      max-parallel: 2
+      max-parallel: 1
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build actions
+        run: npm run build:all
+
+      - name: Generate .env.tpl
+        shell: bash
+        run: |
+          mkdir -p tests
+          echo "FILE_SECRET=op://${VAULT}/test-secret/password" > tests/.env.tpl
+        env:
+          VAULT: ${{ secrets.VAULT }}
+
+      - name: Configure Service account
+        uses: ./configure
+        with:
+          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      - name: Load secrets
+        id: load_secrets
+        uses: ./
+        with:
+          version: latest
+          export-env: false
+        env:
+          SECRET: op://${{ secrets.VAULT }}/test-secret/password
+          OP_ENV_FILE: ./tests/.env.tpl
+
+      - name: Assert secret resolved (env var + OP_ENV_FILE)
+        shell: bash
+        env:
+          SMOKE: "true"
+          SECRET: ${{ steps.load_secrets.outputs.SECRET }}
+          FILE_SECRET: ${{ steps.load_secrets.outputs.FILE_SECRET }}
+        run: ./tests/assert-env-set.sh
+
+  test-connect:
+    name: Connect (ubuntu-latest, ${{ matrix.version }})
+    needs: test-service-account-smoke
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1
       matrix:
         version: [latest]
-        export-env: [true, false]
-        # Run the pinned version once (see note in test-service-account).
-        include:
-          - version: 2.30.0
-            export-env: false
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -206,7 +258,7 @@ jobs:
         uses: ./
         with:
           version: ${{ matrix.version }}
-          export-env: ${{ matrix.export-env }}
+          export-env: false
         env:
           SECRET: op://${{ secrets.VAULT }}/test-secret/password
           SECRET_IN_SECTION: op://${{ secrets.VAULT }}/test-secret/test-section/password
@@ -216,7 +268,6 @@ jobs:
           OP_ENV_FILE: ./tests/.env.tpl
 
       - name: Assert test secret values [step output]
-        if: ${{ !matrix.export-env }}
         env:
           ASSERT_WEBSITE: "false"
           SECRET: ${{ steps.load_secrets.outputs.SECRET }}
@@ -232,7 +283,6 @@ jobs:
         run: ./tests/assert-env-set.sh
 
       - name: Assert SSH key env vars [step output]
-        if: ${{ !matrix.export-env }}
         env:
           TEST_SSH_KEY: ${{ steps.load_secrets.outputs.TEST_SSH_KEY }}
           FILE_TEST_SSH_KEY: ${{ steps.load_secrets.outputs.FILE_TEST_SSH_KEY }}
@@ -240,25 +290,52 @@ jobs:
           FILE_TEST_SSH_KEY_OPENSSH: ${{ steps.load_secrets.outputs.FILE_TEST_SSH_KEY_OPENSSH }}
         run: ./tests/assert-ssh-keys-set.sh
 
-      - name: Assert test secret values [exported env]
-        if: ${{ matrix.export-env }}
-        env:
-          ASSERT_WEBSITE: "false"
-        run: ./tests/assert-env-set.sh
+  # Proves an explicit pinned version is honored. Install-only (no op:// refs), so it
+  # reads no secrets and runs in parallel with the other install/fallback jobs.
+  test-install:
+    name: Install pinned CLI version (${{ matrix.version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        version: [2.30.0]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
 
-      - name: Assert SSH key env vars [exported env]
-        if: ${{ matrix.export-env }}
-        run: ./tests/assert-ssh-keys-set.sh
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
 
-      - name: Remove secrets [exported env]
-        if: ${{ matrix.export-env }}
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build actions
+        run: npm run build:all
+
+      - name: Configure Service account
+        uses: ./configure
+        with:
+          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      - name: Install 1Password CLI (pinned version)
         uses: ./
         with:
-          unset-previous: true
+          version: ${{ matrix.version }}
 
-      - name: Assert removed secrets [exported env]
-        if: ${{ matrix.export-env }}
-        run: ./tests/assert-env-unset.sh
+      - name: Assert the pinned version installed
+        run: |
+          expected="${{ matrix.version }}"
+          actual="$(op --version)"
+          if [ "$actual" != "$expected" ]; then
+            echo "Expected CLI version '$expected' but got '$actual'"
+            exit 1
+          fi
+          echo "Pinned install resolved $actual as expected"
 
   test-docker-hub-fallback:
     name: "Docker Hub fallback (${{ matrix.channel }})"

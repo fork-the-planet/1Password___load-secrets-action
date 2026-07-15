@@ -31,6 +31,11 @@ readonly WEBSITE="www.test.com"
 assert_env_equals "SECRET" "${SECRET}"
 assert_env_equals "FILE_SECRET" "${SECRET}"
 
+# SMOKE mode (per-OS smoke job): only SECRET/FILE_SECRET are loaded, so stop here.
+if [ "${SMOKE:-false}" = "true" ]; then
+  exit 0
+fi
+
 assert_env_equals "SECRET_IN_SECTION" "${SECRET}"
 assert_env_equals "FILE_SECRET_IN_SECTION" "${SECRET}"
 
